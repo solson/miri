@@ -323,7 +323,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         );
 
         if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
-            this.reject_in_isolation("getcwd", reject_with)?;
+            this.reject_in_isolation("`getcwd`", reject_with)?;
             this.set_last_error_from_io_error(ErrorKind::PermissionDenied)?;
             return Ok(Scalar::null_ptr(&*this.tcx));
         }
@@ -355,7 +355,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         this.assert_target_os("windows", "GetCurrentDirectoryW");
 
         if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
-            this.reject_in_isolation("GetCurrentDirectoryW", reject_with)?;
+            this.reject_in_isolation("`GetCurrentDirectoryW`", reject_with)?;
             this.set_last_error_from_io_error(ErrorKind::PermissionDenied)?;
             return Ok(0);
         }
@@ -381,7 +381,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         );
 
         if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
-            this.reject_in_isolation("chdir", reject_with)?;
+            this.reject_in_isolation("`chdir`", reject_with)?;
             this.set_last_error_from_io_error(ErrorKind::PermissionDenied)?;
 
             return Ok(-1);
@@ -409,7 +409,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         this.assert_target_os("windows", "SetCurrentDirectoryW");
 
         if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
-            this.reject_in_isolation("SetCurrentDirectoryW", reject_with)?;
+            this.reject_in_isolation("`SetCurrentDirectoryW`", reject_with)?;
             this.set_last_error_from_io_error(ErrorKind::PermissionDenied)?;
 
             return Ok(0);

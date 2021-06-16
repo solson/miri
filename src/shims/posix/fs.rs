@@ -4,7 +4,7 @@ use std::convert::{TryFrom, TryInto};
 use std::fs::{
     read_dir, remove_dir, remove_file, rename, DirBuilder, File, FileType, OpenOptions, ReadDir,
 };
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -504,7 +504,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("`open`")?;
+        // Reject if isolation is enabled.
+        if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
+            this.reject_in_isolation("`open`", reject_with)?;
+            this.set_last_error_from_io_error(ErrorKind::PermissionDenied)?;
+            return Ok(-1);
+        }
 
         let flag = this.read_scalar(flag_op)?.to_i32()?;
 
@@ -594,7 +599,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     fn fcntl(&mut self, args: &[OpTy<'tcx, Tag>]) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("`fcntl`")?;
+        // Reject if isolation is enabled.
+        if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
+            this.reject_in_isolation("`fcntl`", reject_with)?;
+            this.set_last_error_from_io_error(ErrorKind::PermissionDenied)?;
+            return Ok(-1);
+        }
 
         if args.len() < 2 {
             throw_ub_format!(
@@ -785,7 +795,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     fn unlink(&mut self, path_op: &OpTy<'tcx, Tag>) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("`unlink`")?;
+        // Reject if isolation is enabled.
+        if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
+            this.reject_in_isolation("`unlink`", reject_with)?;
+            this.set_last_error_from_io_error(ErrorKind::PermissionDenied)?;
+            return Ok(-1);
+        }
 
         let path = this.read_path_from_c_str(this.read_scalar(path_op)?.check_init()?)?;
 
@@ -811,7 +826,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("`symlink`")?;
+        // Reject if isolation is enabled.
+        if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
+            this.reject_in_isolation("`symlink`", reject_with)?;
+            this.set_last_error_from_io_error(ErrorKind::PermissionDenied)?;
+            return Ok(-1);
+        }
 
         let target = this.read_path_from_c_str(this.read_scalar(target_op)?.check_init()?)?;
         let linkpath = this.read_path_from_c_str(this.read_scalar(linkpath_op)?.check_init()?)?;
@@ -827,7 +847,15 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
         this.assert_target_os("macos", "stat");
-        this.check_no_isolation("`stat`")?;
+
+        // Reject if isolation is enabled.
+        if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
+            this.reject_in_isolation("`stat`", reject_with)?;
+            // macos stat never sets "EPERM". Set error code "ENOENT".
+            this.set_last_error_from_io_error(ErrorKind::NotFound)?;
+            return Ok(-1);
+        }
+
         // `stat` always follows symlinks.
         this.macos_stat_or_lstat(true, path_op, buf_op)
     }
@@ -840,7 +868,15 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
         this.assert_target_os("macos", "lstat");
-        this.check_no_isolation("`lstat`")?;
+
+        // Reject if isolation is enabled.
+        if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
+            this.reject_in_isolation("`lstat`", reject_with)?;
+            // macos lstat never sets "EPERM". Set error code "ENOENT".
+            this.set_last_error_from_io_error(ErrorKind::NotFound)?;
+            return Ok(-1);
+        }
+
         this.macos_stat_or_lstat(false, path_op, buf_op)
     }
 
@@ -852,7 +888,13 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let this = self.eval_context_mut();
 
         this.assert_target_os("macos", "fstat");
-        this.check_no_isolation("`fstat`")?;
+
+        // Reject if isolation is enabled.
+        if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
+            this.reject_in_isolation("`fstat`", reject_with)?;
+            // Set error code as "EBADF" (bad fd)
+            return this.handle_not_found();
+        }
 
         let fd = this.read_scalar(fd_op)?.to_i32()?;
 
@@ -874,7 +916,14 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let this = self.eval_context_mut();
 
         this.assert_target_os("linux", "statx");
-        this.check_no_isolation("`statx`")?;
+
+        // Reject if isolation is enabled.
+        if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
+            this.reject_in_isolation("`statx`", reject_with)?;
+            // statx never sets "EPERM". Set error code "ENOENT".
+            this.set_last_error_from_io_error(ErrorKind::NotFound)?;
+            return Ok(-1);
+        }
 
         let statxbuf_scalar = this.read_scalar(statxbuf_op)?.check_init()?;
         let pathname_scalar = this.read_scalar(pathname_op)?.check_init()?;
@@ -1034,7 +1083,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("`rename`")?;
+        // Reject if isolation is enabled.
+        if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
+            this.reject_in_isolation("`rename`", reject_with)?;
+            this.set_last_error_from_io_error(ErrorKind::PermissionDenied)?;
+            return Ok(-1);
+        }
 
         let oldpath_scalar = this.read_scalar(oldpath_op)?.check_init()?;
         let newpath_scalar = this.read_scalar(newpath_op)?.check_init()?;
@@ -1060,7 +1114,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("`mkdir`")?;
+        // Reject if isolation is enabled.
+        if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
+            this.reject_in_isolation("`mkdir`", reject_with)?;
+            this.set_last_error_from_io_error(ErrorKind::PermissionDenied)?;
+            return Ok(-1);
+        }
 
         #[cfg_attr(not(unix), allow(unused_variables))]
         let mode = if this.tcx.sess.target.os == "macos" {
@@ -1090,7 +1149,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     fn rmdir(&mut self, path_op: &OpTy<'tcx, Tag>) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("`rmdir`")?;
+        // Reject if isolation is enabled.
+        if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
+            this.reject_in_isolation("`rmdir`", reject_with)?;
+            this.set_last_error_from_io_error(ErrorKind::PermissionDenied)?;
+            return Ok(-1);
+        }
 
         let path = this.read_path_from_c_str(this.read_scalar(path_op)?.check_init()?)?;
 
@@ -1102,7 +1166,13 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     fn opendir(&mut self, name_op: &OpTy<'tcx, Tag>) -> InterpResult<'tcx, Scalar<Tag>> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("`opendir`")?;
+        // Reject if isolation is enabled.
+        if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
+            this.reject_in_isolation("`opendir`", reject_with)?;
+            // opendir function never sets "EPERM". Set "ENOENT".
+            this.set_last_error_from_io_error(ErrorKind::NotFound)?;
+            return Ok(Scalar::null_ptr(this));
+        }
 
         let name = this.read_path_from_c_str(this.read_scalar(name_op)?.check_init()?)?;
 
@@ -1133,7 +1203,13 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let this = self.eval_context_mut();
 
         this.assert_target_os("linux", "readdir64_r");
-        this.check_no_isolation("`readdir64_r`")?;
+
+        // Reject if isolation is enabled.
+        if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
+            this.reject_in_isolation("`readdir64_r`", reject_with)?;
+            // Set error code as "EBADF" (bad fd)
+            return this.handle_not_found();
+        }
 
         let dirp = this.read_scalar(dirp_op)?.to_machine_usize(this)?;
 
@@ -1222,7 +1298,13 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let this = self.eval_context_mut();
 
         this.assert_target_os("macos", "readdir_r");
-        this.check_no_isolation("`readdir_r`")?;
+
+        // Reject if isolation is enabled.
+        if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
+            this.reject_in_isolation("`readdir_r`", reject_with)?;
+            // Set error code as "EBADF" (bad fd)
+            return this.handle_not_found();
+        }
 
         let dirp = this.read_scalar(dirp_op)?.to_machine_usize(this)?;
 
@@ -1307,7 +1389,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     fn closedir(&mut self, dirp_op: &OpTy<'tcx, Tag>) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("`closedir`")?;
+        // Reject if isolation is enabled.
+        if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
+            this.reject_in_isolation("`closedir`", reject_with)?;
+            // Set error code as "EBADF" (bad fd)
+            return this.handle_not_found();
+        }
 
         let dirp = this.read_scalar(dirp_op)?.to_machine_usize(this)?;
 
@@ -1326,7 +1413,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("`ftruncate64`")?;
+        // Reject if isolation is enabled.
+        if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
+            this.reject_in_isolation("`ftruncate64`", reject_with)?;
+            this.set_last_error_from_io_error(ErrorKind::PermissionDenied)?;
+            return Ok(-1);
+        }
 
         let fd = this.read_scalar(fd_op)?.to_i32()?;
         let length = this.read_scalar(length_op)?.to_i64()?;
@@ -1361,7 +1453,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("`fsync`")?;
+        // Reject if isolation is enabled.
+        if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
+            this.reject_in_isolation("`fsync`", reject_with)?;
+            // Set error code as "EBADF" (bad fd)
+            return this.handle_not_found();
+        }
 
         let fd = this.read_scalar(fd_op)?.to_i32()?;
         if let Some(file_descriptor) = this.machine.file_handler.handles.get(&fd) {
@@ -1377,7 +1474,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     fn fdatasync(&mut self, fd_op: &OpTy<'tcx, Tag>) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("`fdatasync`")?;
+        // Reject if isolation is enabled.
+        if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
+            this.reject_in_isolation("`fdatasync`", reject_with)?;
+            // Set error code as "EBADF" (bad fd)
+            return this.handle_not_found();
+        }
 
         let fd = this.read_scalar(fd_op)?.to_i32()?;
         if let Some(file_descriptor) = this.machine.file_handler.handles.get(&fd) {
@@ -1399,7 +1501,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("`sync_file_range`")?;
+        // Reject if isolation is enabled.
+        if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
+            this.reject_in_isolation("`sync_file_range`", reject_with)?;
+            // Set error code as "EBADF" (bad fd)
+            return this.handle_not_found();
+        }
 
         let fd = this.read_scalar(fd_op)?.to_i32()?;
         let offset = this.read_scalar(offset_op)?.to_i64()?;
@@ -1438,7 +1545,13 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i64> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("readlink")?;
+        // Reject if isolation is enabled.
+        if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
+            this.reject_in_isolation("`readlink`", reject_with)?;
+            // readlink never sets "EPERM". Set "ENOENT".
+            this.set_last_error_from_io_error(ErrorKind::NotFound)?;
+            return Ok(-1);
+        }
 
         let pathname = this.read_path_from_c_str(this.read_scalar(pathname_op)?.check_init()?)?;
         let buf = this.read_scalar(buf_op)?.check_init()?;
